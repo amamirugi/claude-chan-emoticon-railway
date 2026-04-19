@@ -73,15 +73,17 @@ function createServer() {
 const app = express();
 app.use(express.json());
 
-// CORS
+// CORS — OPTIONS도 미들웨어에서 처리 (Express 5 호환)
 app.use((_req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Headers", "*");
   res.header("Access-Control-Expose-Headers", "mcp-session-id");
+  if (_req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
   next();
 });
-app.options("*", (_req, res) => res.sendStatus(204));
 
 // health check
 app.get("/", (_req, res) => {
