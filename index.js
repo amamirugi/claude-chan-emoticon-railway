@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { registerAppTool, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
@@ -12,7 +13,6 @@ import crypto from "node:crypto";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, "dist");
 
-// ─── 감정 목록 (26종, 에셋 파일명과 일치) ───
 const EMOTIONS = [
   "neutral", "happy", "embarrassed", "sad",
   "angry", "surprised", "love", "smug",
@@ -35,7 +35,6 @@ const EMOTION_KR = {
 
 const RESOURCE_URI = "ui://claude-chan-emoticon/app";
 
-// ─── MCP 서버 생성 ───
 function createServer() {
   const server = new McpServer({
     name: "claude-chan-emoticon",
@@ -71,40 +70,74 @@ function createServer() {
   return server;
 }
 
-// ─── HTTP 서버 (가이드의 stdio 대체) ───
 const app = express();
 app.use(express.json());
 
-const sessions = new Map();
+// CORS
+app.use((_req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "*");
+  res.header("Access-Control-Expose-Headers", "mcp-session-id");
+  next();
+});
+app.options("*", (_req, res) => res.sendStatus(204));
 
-// health check (Railway / 배포 확인용)
+// health check
 app.get("/", (_req, res) => {
   res.json({ status: "ok", name: "claude-chan-emoticon", version: "3.0.0" });
 });
 
-// MCP Streamable HTTP — POST
+// ── SSE 전송 (/sse + /messages) ──
+const sseTransports = new Map();
+
+app.get("/sse", async (req, res) => {
+  console.log("[SSE] New connection");
+  const transport = new SSEServerTransport("/messages", res);
+  sseTransports.set(transport.sessionId, transport);
+
+  transport.onclose = () => {
+    console.log(`[SSE] Closed: ${transport.sessionId}`);
+    sseTransports.delete(transport.sessionId);
+  };
+
+  const server = createServer();
+  await server.connect(transport);
+});
+
+app.post("/messages", async (req, res) => {
+  const sessionId = req.query.sessionId;
+  const transport = sseTransports.get(sessionId);
+  if (!transport) {
+    res.status(400).json({ error: "Unknown session" });
+    return;
+  }
+  await transport.handlePostMessage(req, res);
+});
+
+// ── Streamable HTTP 전송 (/mcp) ──
+const httpSessions = new Map();
+
 app.post("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
 
-  // 기존 세션이 있으면 재사용
-  if (sessionId && sessions.has(sessionId)) {
-    const transport = sessions.get(sessionId);
+  if (sessionId && httpSessions.has(sessionId)) {
+    const transport = httpSessions.get(sessionId);
     await transport.handleRequest(req, res);
     return;
   }
 
-  // 새 세션 생성
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
   });
 
   transport.onSessionInitialized = (sid) => {
-    sessions.set(sid, transport);
+    httpSessions.set(sid, transport);
   };
 
   transport.onclose = () => {
     const sid = transport.sessionId;
-    if (sid) sessions.delete(sid);
+    if (sid) httpSessions.delete(sid);
   };
 
   const server = createServer();
@@ -112,24 +145,22 @@ app.post("/mcp", async (req, res) => {
   await transport.handleRequest(req, res);
 });
 
-// MCP Streamable HTTP — GET (SSE 스트림)
 app.get("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
-  if (!sessionId || !sessions.has(sessionId)) {
+  if (!sessionId || !httpSessions.has(sessionId)) {
     res.status(400).json({ error: "Invalid or missing session ID" });
     return;
   }
-  const transport = sessions.get(sessionId);
+  const transport = httpSessions.get(sessionId);
   await transport.handleRequest(req, res);
 });
 
-// MCP Streamable HTTP — DELETE (세션 종료)
 app.delete("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
-  if (sessionId && sessions.has(sessionId)) {
-    const transport = sessions.get(sessionId);
+  if (sessionId && httpSessions.has(sessionId)) {
+    const transport = httpSessions.get(sessionId);
     await transport.handleRequest(req, res);
-    sessions.delete(sessionId);
+    httpSessions.delete(sessionId);
     return;
   }
   res.status(400).json({ error: "Invalid or missing session ID" });
