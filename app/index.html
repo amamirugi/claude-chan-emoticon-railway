@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      min-height: 100vh; background: transparent;
+      font-family: "Segoe UI", sans-serif;
+    }
+    #emotion-img {
+      width: 180px; height: 180px;
+      object-fit: contain; display: none; border-radius: 12px;
+    }
+    #label { margin-top: 10px; font-size: 13px; color: #555; text-align: center; max-width: 200px; }
+    #loading { color: #aaa; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <span id="loading">Loading...</span>
+  <img id="emotion-img" alt="emoticon" />
+  <p id="label"></p>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
