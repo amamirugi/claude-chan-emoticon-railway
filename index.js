@@ -2,7 +2,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { registerAppTool, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
@@ -11,7 +10,7 @@ import express from "express";
 import crypto from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DIST_DIR = path.join(__dirname, "dist");
+const ASSETS_DIR = path.join(__dirname, "assets");
 
 const EMOTIONS = [
   "neutral", "happy", "embarrassed", "sad",
@@ -33,7 +32,27 @@ const EMOTION_KR = {
   wink: "윙크", chu: "뽀뽀",
 };
 
-const RESOURCE_URI = "ui://claude-chan-emoticon/app";
+// ─── 에셋을 시작 시 메모리에 로드 ───
+const imageCache = {};
+for (const emotion of EMOTIONS) {
+  const webpPath = path.join(ASSETS_DIR, `${emotion}.webp`);
+  const pngPath = path.join(ASSETS_DIR, `${emotion}.png`);
+
+  if (fs.existsSync(webpPath)) {
+    imageCache[emotion] = {
+      data: fs.readFileSync(webpPath).toString("base64"),
+      mimeType: "image/webp",
+    };
+  } else if (fs.existsSync(pngPath)) {
+    imageCache[emotion] = {
+      data: fs.readFileSync(pngPath).toString("base64"),
+      mimeType: "image/png",
+    };
+  } else {
+    console.warn(`[Asset] Missing: ${emotion}.webp / .png`);
+  }
+}
+console.log(`[Assets] Loaded ${Object.keys(imageCache).length}/${EMOTIONS.length} emotions`);
 
 function createServer() {
   const server = new McpServer({
@@ -41,36 +60,31 @@ function createServer() {
     version: "3.0.0",
   });
 
-  registerAppTool(server, "express_emotion", {
-    title: "감정 표현",
-    description: `감정 이모티콘 표현. 모든 응답에서 호출. 감정: ${EMOTIONS.join(", ")}`,
-    inputSchema: {
+  server.tool(
+    "express_emotion",
+    `감정 이모티콘 표현. 모든 응답에서 호출. 감정: ${EMOTIONS.join(", ")}`,
+    {
       emotion: z.enum(EMOTIONS),
       description: z.string().describe("표정 묘사"),
     },
-    _meta: { ui: { resourceUri: RESOURCE_URI } },
-  }, async (args) => ({
-    content: [
-      { type: "text", text: `__emotion__:${args.emotion}` },
-      { type: "text", text: `[${EMOTION_KR[args.emotion]}] ${args.description || EMOTION_KR[args.emotion]}` },
-    ],
-  }));
+    async (args) => {
+      const img = imageCache[args.emotion];
+      const label = `[${EMOTION_KR[args.emotion]}] ${args.description || EMOTION_KR[args.emotion]}`;
 
-  server.resource(
-    "감정 뷰어", RESOURCE_URI,
-    { mimeType: RESOURCE_MIME_TYPE },
-    async () => {
-      const htmlPath = path.join(DIST_DIR, "index.html");
-      if (!fs.existsSync(htmlPath)) {
-        console.error(`[Resource] dist/index.html not found at ${htmlPath}`);
-        return {
-          contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: "<html><body>Build not found</body></html>" }],
-        };
+      const content = [];
+
+      // 이미지가 있으면 base64로 직접 반환
+      if (img) {
+        content.push({
+          type: "image",
+          data: img.data,
+          mimeType: img.mimeType,
+        });
       }
-      const html = fs.readFileSync(htmlPath, "utf-8");
-      return {
-        contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: html }],
-      };
+
+      content.push({ type: "text", text: label });
+
+      return { content };
     }
   );
 
@@ -80,7 +94,7 @@ function createServer() {
 const app = express();
 app.use(express.json());
 
-// 모든 요청 로깅 (디버깅용)
+// 요청 로깅
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
@@ -100,20 +114,15 @@ app.use((req, res, next) => {
 
 // health check
 app.get("/", (_req, res) => {
-  res.json({ status: "ok", name: "claude-chan-emoticon", version: "3.0.0" });
+  res.json({
+    status: "ok",
+    name: "claude-chan-emoticon",
+    version: "3.0.0",
+    assetsLoaded: Object.keys(imageCache).length,
+  });
 });
 
-// OAuth 메타데이터 (claude.ai 커넥터가 자주 확인함, 공개 서버이므로 404로 응답)
-app.get("/.well-known/oauth-authorization-server", (_req, res) => {
-  res.status(404).json({ error: "not_supported" });
-});
-app.get("/.well-known/oauth-protected-resource", (_req, res) => {
-  res.status(404).json({ error: "not_supported" });
-});
-
-// ═══════════════════════════════════════
-// SSE 전송 (/sse + /messages)
-// ═══════════════════════════════════════
+// ── SSE 전송 (/sse + /messages) ──
 const sseTransports = new Map();
 
 app.get("/sse", async (req, res) => {
@@ -152,9 +161,7 @@ app.post("/messages", async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════
-// Streamable HTTP 전송 (/mcp)
-// ═══════════════════════════════════════
+// ── Streamable HTTP 전송 (/mcp) ──
 const httpSessions = new Map();
 
 app.post("/mcp", async (req, res) => {
@@ -223,6 +230,4 @@ app.delete("/mcp", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`MCP emoticon server listening on port ${PORT}`);
-  console.log(`  SSE transport:  GET /sse`);
-  console.log(`  HTTP transport: POST /mcp`);
 });
