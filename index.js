@@ -60,7 +60,14 @@ function createServer() {
     "감정 뷰어", RESOURCE_URI,
     { mimeType: RESOURCE_MIME_TYPE },
     async () => {
-      const html = fs.readFileSync(path.join(DIST_DIR, "index.html"), "utf-8");
+      const htmlPath = path.join(DIST_DIR, "index.html");
+      if (!fs.existsSync(htmlPath)) {
+        console.error(`[Resource] dist/index.html not found at ${htmlPath}`);
+        return {
+          contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: "<html><body>Build not found</body></html>" }],
+        };
+      }
+      const html = fs.readFileSync(htmlPath, "utf-8");
       return {
         contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: html }],
       };
@@ -73,13 +80,19 @@ function createServer() {
 const app = express();
 app.use(express.json());
 
-// CORS — OPTIONS도 미들웨어에서 처리 (Express 5 호환)
-app.use((_req, res, next) => {
+// 모든 요청 로깅 (디버깅용)
+app.use((req, _res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+// CORS
+app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "*");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, mcp-session-id, mcp-protocol-version");
   res.header("Access-Control-Expose-Headers", "mcp-session-id");
-  if (_req.method === "OPTIONS") {
+  if (req.method === "OPTIONS") {
     return res.sendStatus(204);
   }
   next();
@@ -90,61 +103,100 @@ app.get("/", (_req, res) => {
   res.json({ status: "ok", name: "claude-chan-emoticon", version: "3.0.0" });
 });
 
-// ── SSE 전송 (/sse + /messages) ──
+// OAuth 메타데이터 (claude.ai 커넥터가 자주 확인함, 공개 서버이므로 404로 응답)
+app.get("/.well-known/oauth-authorization-server", (_req, res) => {
+  res.status(404).json({ error: "not_supported" });
+});
+app.get("/.well-known/oauth-protected-resource", (_req, res) => {
+  res.status(404).json({ error: "not_supported" });
+});
+
+// ═══════════════════════════════════════
+// SSE 전송 (/sse + /messages)
+// ═══════════════════════════════════════
 const sseTransports = new Map();
 
 app.get("/sse", async (req, res) => {
   console.log("[SSE] New connection");
-  const transport = new SSEServerTransport("/messages", res);
-  sseTransports.set(transport.sessionId, transport);
+  try {
+    const transport = new SSEServerTransport("/messages", res);
+    sseTransports.set(transport.sessionId, transport);
 
-  transport.onclose = () => {
-    console.log(`[SSE] Closed: ${transport.sessionId}`);
-    sseTransports.delete(transport.sessionId);
-  };
+    transport.onclose = () => {
+      console.log(`[SSE] Closed: ${transport.sessionId}`);
+      sseTransports.delete(transport.sessionId);
+    };
 
-  const server = createServer();
-  await server.connect(transport);
+    const server = createServer();
+    await server.connect(transport);
+    console.log(`[SSE] Connected: ${transport.sessionId}`);
+  } catch (e) {
+    console.error("[SSE] Error:", e);
+    if (!res.headersSent) res.status(500).end();
+  }
 });
 
 app.post("/messages", async (req, res) => {
   const sessionId = req.query.sessionId;
   const transport = sseTransports.get(sessionId);
   if (!transport) {
+    console.log(`[SSE] Unknown session: ${sessionId}`);
     res.status(400).json({ error: "Unknown session" });
     return;
   }
-  await transport.handlePostMessage(req, res);
+  try {
+    await transport.handlePostMessage(req, res, req.body);
+  } catch (e) {
+    console.error("[SSE] handlePostMessage error:", e);
+    if (!res.headersSent) res.status(500).json({ error: String(e) });
+  }
 });
 
-// ── Streamable HTTP 전송 (/mcp) ──
+// ═══════════════════════════════════════
+// Streamable HTTP 전송 (/mcp)
+// ═══════════════════════════════════════
 const httpSessions = new Map();
 
 app.post("/mcp", async (req, res) => {
-  const sessionId = req.headers["mcp-session-id"];
+  try {
+    const sessionId = req.headers["mcp-session-id"];
 
-  if (sessionId && httpSessions.has(sessionId)) {
-    const transport = httpSessions.get(sessionId);
-    await transport.handleRequest(req, res);
-    return;
+    if (sessionId && httpSessions.has(sessionId)) {
+      const transport = httpSessions.get(sessionId);
+      await transport.handleRequest(req, res, req.body);
+      return;
+    }
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => crypto.randomUUID(),
+    });
+
+    transport.onSessionInitialized = (sid) => {
+      console.log(`[HTTP] Session initialized: ${sid}`);
+      httpSessions.set(sid, transport);
+    };
+
+    transport.onclose = () => {
+      const sid = transport.sessionId;
+      if (sid) {
+        console.log(`[HTTP] Session closed: ${sid}`);
+        httpSessions.delete(sid);
+      }
+    };
+
+    const server = createServer();
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (e) {
+    console.error("[HTTP] Error:", e);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: String(e) },
+        id: null,
+      });
+    }
   }
-
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => crypto.randomUUID(),
-  });
-
-  transport.onSessionInitialized = (sid) => {
-    httpSessions.set(sid, transport);
-  };
-
-  transport.onclose = () => {
-    const sid = transport.sessionId;
-    if (sid) httpSessions.delete(sid);
-  };
-
-  const server = createServer();
-  await server.connect(transport);
-  await transport.handleRequest(req, res);
 });
 
 app.get("/mcp", async (req, res) => {
@@ -171,4 +223,6 @@ app.delete("/mcp", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`MCP emoticon server listening on port ${PORT}`);
+  console.log(`  SSE transport:  GET /sse`);
+  console.log(`  HTTP transport: POST /mcp`);
 });
