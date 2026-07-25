@@ -4,7 +4,7 @@
 > Repository: `amamirugi/claude-chan-emoticon-railway`
 > Active branch: `vercel-revival`
 > Base branch: `main`
-> Current branch head before this document: `cd271468feac945d9b5d40672143afce2f532fa5`
+> Current verified production commit: `30a5b85b56453fc102f42c4a4d48e745d3556780`
 
 ## Objective
 
@@ -135,6 +135,32 @@ The branch now contains a Vercel/Next.js MCP Apps vertical slice, including:
 
 The old Railway files still exist, but are not intended to be part of the new Next.js/Vercel runtime path.
 
+### Vercel build and Claude.ai validation
+
+The first two Vercel builds exposed an MCP package peer-dependency conflict:
+
+- `3fe22ce` failed because `@modelcontextprotocol/ext-apps` resolved to `1.7.5`, which required SDK `^1.29.0`, while the project pinned SDK `1.25.2`;
+- `ee15a1a` failed after raising the SDK to `1.29.0`, because `mcp-handler@1.1.0` requires SDK exactly `1.26.0`.
+
+The compatible package set was then pinned and committed:
+
+- commit `30a5b85b56453fc102f42c4a4d48e745d3556780`;
+- `@modelcontextprotocol/ext-apps@1.0.1`;
+- `@modelcontextprotocol/sdk@1.26.0`;
+- `mcp-handler@1.1.0`.
+
+That commit built successfully on Vercel. The Preview deployment itself could not be registered in Claude.ai because Vercel Preview protection redirected the remote client into an OAuth/login flow. Promoting the same deployment to Production made the endpoint publicly reachable and Claude.ai custom connector registration succeeded.
+
+A real Claude.ai tool call was then observed:
+
+```text
+express_emotion({ emotion: "happy" })
+-> Displayed Claude-chan emotion: happy
+-> interactive MCP App widget rendered in the chat
+```
+
+This confirms the core revival hypothesis: the `happy.webp` presentation can render through MCP Apps inline UI without returning raw `type: "image"` content. The production deployment was created by manually promoting commit `30a5b85`; Production Branch tracking has not yet been confirmed and must not be assumed.
+
 ## Exact current state
 
 ### Done
@@ -143,61 +169,57 @@ The old Railway files still exist, but are not intended to be part of the new Ne
 - Vercel chosen as the revival target;
 - `vercel-revival` branch created;
 - minimal `happy` vertical slice implemented and committed;
-- revival strategy recorded in `REVIVAL.md`;
-- legacy runtime intentionally preserved for comparison.
+- compatible MCP package versions pinned;
+- Vercel build succeeded for commit `30a5b85`;
+- successful deployment promoted from Preview to Production;
+- public `/mcp` endpoint accepted by Claude.ai after promotion;
+- Claude.ai custom connector registration succeeded;
+- real `express_emotion({ emotion: "happy" })` call succeeded;
+- Claude.ai reported that the tool call rendered an interactive widget in the chat;
+- no raw `type: "image"` fallback is used by the revival path.
 
 ### Not yet done
 
-- Vercel project/deployment for `vercel-revival`;
-- confirmation that the branch builds successfully on Vercel;
-- public `/mcp` endpoint verification;
-- Claude.ai custom connector registration against that endpoint;
-- real `express_emotion({ emotion: "happy" })` call from Claude.ai;
-- confirmation that `happy.webp` renders inline rather than inside a tool/reasoning disclosure;
-- mobile/Desktop compatibility testing;
+- reproduce the same result in an additional fresh Claude.ai conversation;
+- confirm repeated-call behavior;
+- confirm Vercel Production Branch tracking / future automatic deployment behavior;
+- mobile and Desktop compatibility testing;
 - restoration of the remaining emotions;
 - legacy cleanup;
-- final README/deployment documentation.
+- final README and deployment documentation.
 
-## Important tooling limitation encountered
+## Tooling limitation encountered during deployment
 
-The user has a Vercel MCP/connector configured, but **this conversation could not execute it**.
+The Vercel MCP/connector was not callable from this ChatGPT conversation, so Vercel-side deployment actions were performed manually by Taehyun in the Vercel dashboard.
 
-Observed behavior in this session:
+This limitation affected only automation from this conversation. It does **not** change the verified result: commit `30a5b85` was built successfully, promoted to Production, accepted by Claude.ai as a custom connector, and used for a successful interactive MCP App render.
 
-- Vercel was not available through the normal connector discovery path;
-- later an attempted `@Vercel` call was blocked for this conversation with a restriction equivalent to: `FORBIDDEN: This conversation is restricted to developer MCPs`.
-
-Therefore no claim should be made that the new branch has been deployed or tested on Vercel. GitHub work is real and committed; Vercel deployment is still pending.
-
-A new conversation may expose the Vercel connector correctly. The next instance should verify this by making a simple real Vercel read call before assuming access.
+Future instances must not assume they can call the Vercel connector merely because it is configured; verify with a harmless real read call first.
 
 ## Next step — highest priority
 
-Deploy the `vercel-revival` branch and test the P1 vertical slice end-to-end.
+Treat the core P1 vertical slice as technically proven, then verify reproducibility before expanding scope.
 
 Recommended sequence:
 
-1. Verify the Vercel connector is actually callable in the new session with a harmless read operation.
-2. Inspect the target Vercel account/team and current projects before creating or changing anything.
-3. Create or link a Vercel project to `amamirugi/claude-chan-emoticon-railway` using branch `vercel-revival` as the test source.
-4. Deploy and verify build success.
-5. Verify the resulting public `/mcp` endpoint.
-6. Register `https://<deployment-domain>/mcp` as a Claude.ai custom connector.
-7. In a fresh Claude.ai conversation, force or request `express_emotion({ emotion: "happy" })`.
-8. Pass P1 only if the happy WebP appears as inline MCP App UI in the conversation, not merely as an image inside the tool/reasoning disclosure.
-9. If P1 fails, classify the failure before changing architecture: MCP transport, tool registration, resource resolution, iframe/App initialization, or asset loading.
+1. Open a completely fresh Claude.ai conversation with the production connector enabled.
+2. Call `express_emotion({ emotion: "happy" })` again.
+3. Confirm the interactive MCP App widget renders again.
+4. Test a second call in the same conversation to catch state or resource-caching problems.
+5. Confirm the Vercel project's Production Branch tracking before relying on automatic deployments; the currently working production deployment was manually promoted.
+6. If reproducibility passes, begin restoring the remaining emotion enum and assets in small batches while preserving the same structured-content + `ui://` resource path.
 
-## P1 success criterion
+## P1 result
 
-P1 is complete only when all of the following are observed in a real Claude.ai conversation:
+The core P1 path has passed in a real Claude.ai conversation:
 
-- Claude.ai connects to the remote `/mcp` endpoint;
-- `express_emotion` is callable;
-- the linked `ui://` resource resolves;
-- `happy.webp` renders inside the MCP App inline card;
-- the image is not dependent on raw tool-result image content;
-- a fresh conversation can reproduce the result.
+- Claude.ai connected to the promoted production `/mcp` endpoint;
+- `express_emotion` was callable;
+- the `happy` call returned successfully;
+- Claude.ai rendered an interactive MCP App widget in the chat;
+- the revival path did not depend on raw tool-result image content.
+
+One strict reliability check remains before calling the vertical slice fully closed: reproduce the same result in a fresh conversation and on a repeated call.
 
 ## After P1 succeeds
 
