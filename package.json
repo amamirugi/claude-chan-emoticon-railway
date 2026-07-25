@@ -10,8 +10,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "1.0.1",
-    "@modelcontextprotocol/sdk": "1.26.0",
-    "mcp-handler": "1.1.0",
+    "@modelcontextprotocol/sdk": "1.25.2",
+    "mcp-handler": "1.0.7",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",

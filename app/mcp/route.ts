@@ -7,7 +7,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 
-const UI_VERSION = "2026-07-25-p1";
+const UI_VERSION = "2026-07-25-p1-bridge-fix-1";
 const RESOURCE_URI = `ui://claude-chan-emoticon/index.html?v=${UI_VERSION}`;
 
 async function fetchPageHtml(): Promise<string> {
